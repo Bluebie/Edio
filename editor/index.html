@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+	<link rel="stylesheet" media="screen" href="main.css"/>
+	<style>
+		/* debug demo styles */
+		body { padding: 3em; }
+		textarea { margin-top: 25em; opacity: 0.2; height: 15em; }
+		
+		/* real editor styles */
+		.edio-document span { white-space: pre-wrap }
+		.edio-document .bold { font-weight: bold }
+		.edio-document .italic { font-style: italic }
+		.edio-document .underline { text-decoration: underline }
+		
+		.insertion-cursor {
+			display: inline-block;
+			height: 1em;
+			width: 0;
+			border-right: 1px solid black;
+			margin-left: -1px;
+			position: absolute;
+			opacity: 0.5;
+		}
+		
+		.insertion-cursor .bubble {
+			position: absolute;
+			width: 6px;
+			height: 10px;
+			border-radius: 2px;
+			background-color: black;
+			color: white;
+			margin: -10px 0 0 -3px;
+			font-size: 9pt;
+			padding-left: 1px;
+			line-height: 0.7;
+/*			opacity: 0.5;*/
+		}
+	</style>
+</head>
+<body>
+	<div id="render" class="edio-document"></div>
+	<textarea id="inputCapture" style="width: 550px">Unstyled plaintext, and some bold text.</textarea>
+	<pre id="jsonOut"></pre>
+	
+	<script src="jquery.js"></script>
+	<script>
+		
+		// sorted formatting tokens - to set and unset boolean properties
+		// format is [length, {'bold': true, 'italic': true, ...}]
+		var insertion_cursor = 'insertion-cursor'; // a constant
+		var segment_length = 0; // array index
+		var segment_style = 1; // array index
+		var styling_segments = [
+			[20, {}], // first some plaintext
+			[3, {italic: true}], // 'and' is italic
+			[16, {bold: true}] // next some bold text
+		];
+		
+		var bubble_content = 'a';
+		
+		// lookup the segment entry for a text index
+		var getSegmentForCursorIndex = function(segments, index) {
+			var seg_idx = 0;
+			while (index > segments[seg_idx][segment_length] && segments[seg_idx+1]) {
+				index -= segments[seg_idx][segment_length];
+				seg_idx++;
+			}
+			return {segment: segments[seg_idx], remainder: index, index: seg_idx};
+		}
+		
+		// slice any segment in to two, at an offset
+		var sliceSegment = function(segments, segment_index, offset) {
+			var left_segment = segments[segment_index];
+			var right_segment = jQuery.extend(true, [], left_segment);
+			left_segment[segment_length] = offset;
+			right_segment[segment_length] -= offset;
+			segments.splice(segment_index, 1, left_segment, right_segment);
+			
+			return {left: left_segment, right: right_segment};
+		}
+		
+		
+		// run whenever text changes happen, to update view
+		var previous_text_length = inputCapture.value.length;
+		var previous_cursor_index = false;
+		var updateTextView = function( self, event ) {
+			var plaintext = self.value;
+			var cursor_index = self.selectionStart; // get the current cursor position
+			
+			// update the segments with a change in segment length
+			if (previous_cursor_index != false) {
+				getSegmentForCursorIndex(styling_segments, previous_cursor_index).segment[segment_length] += plaintext.length - previous_text_length;
+			}
+			previous_text_length = plaintext.length;
+			previous_cursor_index = cursor_index;
+			
+			var styled_texts = [];
+			var segments = jQuery.extend(true, [], styling_segments); // make a copy we can consume
+			var cursor_segment = getSegmentForCursorIndex(segments, cursor_index);
+			
+			// slice and insert the cursor
+			if (document.activeElement == self)	{
+				var result = sliceSegment(segments, cursor_segment.index, cursor_segment.remainder);
+				segments.splice(cursor_segment.index + 1, 0, insertion_cursor);
+			}
+			
+			
+			// generate the html version
+			var char_index = 0, prev_styles = [];
+			while (segments.length > 0) {
+				if (char_index > plaintext.length) break;
+				var segment = segments.shift();
+				
+				// handle the insertion cursor, if this is one
+				if (segment == 'insertion-cursor') {
+					var bubble_html = prev_styles.length > 0 && '<span class="bubble '+ prev_styles.join(' ') +'">'+ bubble_content.replace(/\</, '&lt;') +'</span>';
+					
+					styled_texts.push( '<span class="'+segment+'">' + (bubble_html || '') + '</span>' );
+					continue;
+				}
+				
+				// figure out the text which goes in this segment
+				var segment_text = plaintext.slice(char_index, char_index + segment[segment_length]).replace(/\</, '&lt;');
+				
+				// build a list of enabled boolean styles
+				var styles = [];
+				for (specific_style in segment[segment_style]) if (segment[segment_style][specific_style] == true) styles.push(specific_style);
+				
+				// add our new styled text block
+				styled_texts.push( '<span class="textual ' + styles.join(' ') + '">' + segment_text + '</span>')
+				
+				char_index += segment[segment_length]; // advance our pointer to the next beginning of text
+				prev_styles = styles; // keep a copy around in for reference when styling future insertion-cursors
+			}
+			
+			render.innerHTML = styled_texts.join('');
+		}
+		
+		// run when user clicks somewhere on the text, to insert the editing cursor there, or mark a selection out
+		var selectionHandler = function( event ) {
+			
+			// grab the selection object
+			var sel = window.getSelection();
+			if (!sel.rangeCount || !sel.getRangeAt) return; // abort!
+			
+			var range = sel.getRangeAt( 0 );
+			var rangeString = range.toString( );
+			
+			var start_container = range.startContainer;
+			if (start_container != Node.ELEMENT_NODE) start_container = start_container.parentNode;
+			var doc = jQuery(start_container).parents('.edio-document');
+			var kids = doc.children('.textual');
+			var segment_idx = kids.index(start_container);
+			
+			console.log(start_container, segment_idx);
+			
+			var offset = jQuery(kids.get().slice(0, segment_idx)).text().length;
+			console.log("offset: " + offset + ", start: " + range.startOffset);
+			
+			// could do a DOM traversal here to collect the length of the input up to the starting selection DOM node
+			var inputNode = inputCapture; 
+			
+			inputNode.selectionStart = offset + range.startOffset;
+			inputNode.selectionEnd = offset + range.startOffset + rangeString.length;
+			
+			// see Range:
+			// http://www.quirksmode.org/dom/range_intro.html
+			// https://developer.mozilla.org/en/DOM/range
+			
+			// and Selection:
+			// https://developer.mozilla.org/en/DOM/Selection
+		}
+		
+		// call it once to update
+		updateTextView(inputCapture);
+		
+		// setup events to run the updater when changes occur
+		$( function() {
+			//$('#jsonOut').text( JSON.stringify( formatting_tokens ) );
+			var input = $('#inputCapture');
+			input.bind('keydown keyup paste cut focus click', function self(evt) {
+				clearTimeout(self.timer);
+				self.timer = setTimeout(updateTextView, 10, this, evt);
+			});
+			
+			$('#render').mouseup( selectionHandler );
+		} );
+	</script>
+</body>
+</html>
